@@ -16,18 +16,50 @@
   --radius-card: 1.75rem;
 }
 
-html, body, #root { min-height: 100%; }
+html,
+body,
+#root {
+  min-height: 100%;
+  min-height: 100dvh;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
 body {
   margin: 0;
   background: var(--color-parchment-2);
   color: var(--color-ink);
   font-family: var(--font-ui);
+  overscroll-behavior-y: none;
 }
-.quiet-motion *, .quiet-motion *::before, .quiet-motion *::after {
+
+.ios-screen {
+  min-height: 100dvh;
+}
+
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+
+@media all and (display-mode: standalone) {
+  body {
+    overscroll-behavior: none;
+  }
+}
+
+.quiet-motion *,
+.quiet-motion *::before,
+.quiet-motion *::after {
   animation: none !important;
   transition: none !important;
   scroll-behavior: auto !important;
 }
+
 .label {
   font-family: var(--font-label);
   font-size: 10px;
@@ -35,6 +67,25 @@ body {
   text-transform: uppercase;
   color: var(--color-clay);
 }
-.serif { font-family: var(--font-display); }
-.tap { min-height: 44px; min-width: 44px; }
-.sheet-backdrop { background: rgba(28, 43, 36, 0.35); }
+
+.serif {
+  font-family: var(--font-display);
+}
+
+.tap {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.sheet-backdrop {
+  background: rgba(28, 43, 36, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:not(.allow-motion) *,
+  html:not(.allow-motion) *::before,
+  html:not(.allow-motion) *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
