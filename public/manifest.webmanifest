@@ -1,0 +1,12 @@
+{
+  "name": "Sproutling",
+  "short_name": "Sproutling",
+  "description": "Photo-first companion for the plants you already live with.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8f4eb",
+  "theme_color": "#f8f4eb",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
