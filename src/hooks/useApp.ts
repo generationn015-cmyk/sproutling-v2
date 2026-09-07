@@ -1,12 +1,24 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { JournalEntry, JournalType, PairingCode, Plant, Room, ToastMessage, UserProfile } from "../types";
 import { careStatus } from "../lib/care";
+import {
+  clearSession,
+  emailLooksValid,
+  hashPassword,
+  newSalt,
+  passwordLooksValid,
+  passwordsMatch,
+  readSession,
+  writeSession,
+} from "../lib/auth";
 import { maybeDailyNudge, permissionState, requestReminders } from "../lib/reminders";
-import { db, ensureDefaults, exportBundle, mintPairingCode, savePhoto, uid, wipeAll } from "../lib/storage";
+import { DEFAULT_USER, db, ensureDefaults, exportBundle, mintPairingCode, normalizeUser, savePhoto, uid, wipeAll } from "../lib/storage";
 import { addDays, nowIso } from "../lib/time";
 
 interface AppState {
   ready: boolean;
+  signedIn: boolean;
+  hasAccount: boolean;
   plants: Plant[];
   rooms: Room[];
   entries: JournalEntry[];
@@ -37,6 +49,10 @@ interface AppContextValue extends AppState {
   createPairing: () => Promise<PairingCode>;
   exportData: () => Promise<void>;
   deleteAll: () => Promise<void>;
+  signUp: (input: { displayName: string; email: string; password: string; remember: boolean }) => Promise<void>;
+  signIn: (input: { email: string; password: string; remember: boolean }) => Promise<void>;
+  signOut: () => void;
+  completeOnboarding: (patch?: Partial<UserProfile>) => Promise<void>;
 }
 
 const AppCtx = createContext<AppContextValue | null>(null);
@@ -54,15 +70,8 @@ export function useAppSource(): AppContextValue {
   const [plants, setPlants] = useState<Plant[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [entries, setEntries] = useState<JournalEntry[]>([]);
-  const [user, setUser] = useState<UserProfile>({
-    id: "me",
-    displayName: "",
-    reminderEnabled: false,
-    reminderHour: 9,
-    reducedMotion: false,
-    units: "imperial",
-    notificationPermission: permissionState(),
-  });
+  const [user, setUser] = useState<UserProfile>({ ...DEFAULT_USER, notificationPermission: permissionState() });
+  const [signedIn, setSignedIn] = useState(false);
   const [pairing, setPairing] = useState<PairingCode | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
@@ -79,7 +88,11 @@ export function useAppSource(): AppContextValue {
     setPlants(p);
     setRooms(r);
     setEntries(e);
-    if (u) setUser({ ...u, notificationPermission: permissionState() });
+    const profile = normalizeUser(u);
+    setUser({ ...profile, notificationPermission: permissionState() });
+    const session = readSession();
+    const accountReady = Boolean(profile.email && profile.passwordHash);
+    setSignedIn(Boolean(session && accountReady && session.email === profile.email));
     if (pair && new Date(pair.expiresAt).getTime() > Date.now()) setPairing(pair);
     else setPairing(null);
 
@@ -125,11 +138,71 @@ export function useAppSource(): AppContextValue {
   const roomName = useCallback((id: string) => rooms.find((r) => r.id === id)?.name ?? "Unassigned", [rooms]);
 
   const saveUser = useCallback(async (patch: Partial<UserProfile>) => {
-    const current = (await db.user.get("me"))!;
+    const current = normalizeUser(await db.user.get("me"));
     const next = { ...current, ...patch };
     await db.user.put(next);
     setUser({ ...next, notificationPermission: permissionState() });
   }, []);
+
+  const signUp = useCallback(
+    async ({ displayName, email, password, remember }: { displayName: string; email: string; password: string; remember: boolean }) => {
+      const name = displayName.trim();
+      const cleanEmail = email.trim().toLowerCase();
+      if (name.length < 2) throw new Error("Add the name you want in the greeting.");
+      if (!emailLooksValid(cleanEmail)) throw new Error("That email does not look right.");
+      if (!passwordLooksValid(password)) throw new Error("Use at least 8 characters for your password.");
+      const existing = normalizeUser(await db.user.get("me"));
+      if (existing.email && existing.passwordHash) throw new Error("This device already has an account. Sign in instead.");
+      const salt = newSalt();
+      const passwordHash = await hashPassword(password, salt);
+      const next: UserProfile = {
+        ...existing,
+        displayName: name,
+        email: cleanEmail,
+        passwordSalt: salt,
+        passwordHash,
+        onboarded: false,
+        createdAt: nowIso(),
+        notificationPermission: permissionState(),
+      };
+      await db.user.put(next);
+      writeSession(cleanEmail, remember);
+      setUser(next);
+      setSignedIn(true);
+      toast("Welcome to Sproutling");
+    },
+    [toast]
+  );
+
+  const signIn = useCallback(
+    async ({ email, password, remember }: { email: string; password: string; remember: boolean }) => {
+      const cleanEmail = email.trim().toLowerCase();
+      const existing = normalizeUser(await db.user.get("me"));
+      if (!existing.email || !existing.passwordHash) throw new Error("No account on this device yet. Create one first.");
+      if (existing.email !== cleanEmail) throw new Error("No account with that email on this device.");
+      const ok = await passwordsMatch(password, existing.passwordSalt, existing.passwordHash);
+      if (!ok) throw new Error("Password does not match.");
+      writeSession(cleanEmail, remember);
+      setUser({ ...existing, notificationPermission: permissionState() });
+      setSignedIn(true);
+      toast("Signed in");
+    },
+    [toast]
+  );
+
+  const signOut = useCallback(() => {
+    clearSession();
+    setSignedIn(false);
+    toast("Signed out");
+  }, [toast]);
+
+  const completeOnboarding = useCallback(
+    async (patch?: Partial<UserProfile>) => {
+      await saveUser({ ...patch, onboarded: true });
+      toast("Your space is ready");
+    },
+    [saveUser, toast]
+  );
 
   const addPlant = useCallback(async (input: Omit<Plant, "id" | "createdAt" | "updatedAt">) => {
     const plant: Plant = { ...input, id: uid("plant"), createdAt: nowIso(), updatedAt: nowIso() };
@@ -292,6 +365,8 @@ export function useAppSource(): AppContextValue {
   return useMemo(
     () => ({
       ready,
+      signedIn,
+      hasAccount: Boolean(user.email && user.passwordHash),
       plants,
       rooms,
       entries,
@@ -319,9 +394,16 @@ export function useAppSource(): AppContextValue {
       createPairing,
       exportData,
       deleteAll,
+      signUp,
+      signIn,
+      signOut,
+      completeOnboarding,
     }),
     [
       ready,
+      signedIn,
+      user.email,
+      user.passwordHash,
       plants,
       rooms,
       entries,
@@ -349,6 +431,10 @@ export function useAppSource(): AppContextValue {
       createPairing,
       exportData,
       deleteAll,
+      signUp,
+      signIn,
+      signOut,
+      completeOnboarding,
     ]
   );
 }
